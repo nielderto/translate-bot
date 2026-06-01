@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Translate Bot",
+  "version": "0.1.0",
+  "description": "YouTube subtitle translation + romanization + chat tutor (Chinese/Korean → English).",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "http://localhost:3000/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Translate Bot"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

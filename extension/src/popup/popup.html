@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <h1>Translate Bot</h1>
+    <label>
+      <input type="checkbox" id="enabled" /> Enabled
+    </label>
+    <fieldset>
+      <legend>Learning language</legend>
+      <label><input type="radio" name="src" value="zh" /> Chinese</label>
+      <label><input type="radio" name="src" value="ko" /> Korean</label>
+    </fieldset>
+    <fieldset>
+      <legend>Target language</legend>
+      <select id="target" disabled>
+        <option value="en">English</option>
+      </select>
+      <p class="hint">More targets coming.</p>
+    </fieldset>
+    <label>
+      Font size
+      <select id="fontSize">
+        <option value="small">Small</option>
+        <option value="medium">Medium</option>
+        <option value="large">Large</option>
+      </select>
+    </label>
+    <label>
+      Backend URL
+      <input type="text" id="backendUrl" />
+    </label>
+    <script type="module" src="./popup.ts"></script>
+  </body>
+</html>

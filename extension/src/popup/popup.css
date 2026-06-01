@@ -1,0 +1,13 @@
+body {
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  width: 260px;
+  padding: 12px;
+  margin: 0;
+}
+h1 { font-size: 14px; margin: 0 0 12px; }
+fieldset { border: 1px solid #ddd; border-radius: 4px; padding: 6px 10px; margin: 8px 0; }
+legend { padding: 0 4px; color: #666; }
+label { display: block; margin: 4px 0; }
+input[type="text"], select { width: 100%; padding: 4px; box-sizing: border-box; }
+.hint { color: #888; font-size: 11px; margin: 4px 0 0; }
