@@ -47,8 +47,8 @@ describe('POST /chat', () => {
 
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(/text\/event-stream/);
-    expect(res.text).toContain('data: Hello, ');
-    expect(res.text).toContain('data: world.');
+    expect(res.text).toContain('data: "Hello, "');
+    expect(res.text).toContain('data: "world."');
     expect(res.text).toContain('data: [DONE]');
   });
 

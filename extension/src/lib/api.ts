@@ -146,11 +146,14 @@ export async function* streamChat(
     const events = buf.split('\n\n');
     buf = events.pop() ?? '';
     for (const evt of events) {
-      const line = evt.split('\n').find((l) => l.startsWith('data: '));
+      const evtLines = evt.split('\n');
+      const isError = evtLines.some((l) => l === 'event: error');
+      const line = evtLines.find((l) => l.startsWith('data: '));
       if (!line) continue;
       const data = line.slice(6);
       if (data === '[DONE]') return;
-      yield data;
+      if (isError) throw new Error(data);
+      try { yield JSON.parse(data) as string; } catch { yield data; }
     }
   }
 }

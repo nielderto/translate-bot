@@ -18,7 +18,9 @@
     "dotenv": "^16.6.1",
     "drizzle-orm": "^0.45.2",
     "express": "^4.22.2",
-    "pg": "^8.21.0"
+    "hangul-romanization": "^1.0.1",
+    "pg": "^8.21.0",
+    "pinyin-pro": "^3.28.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

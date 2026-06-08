@@ -69,7 +69,7 @@ export function chatRouter(): Router {
 
     try {
       for await (const chunk of streamChat({ system, messages })) {
-        res.write(`data: ${chunk}\n\n`);
+        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
       }
       res.write('data: [DONE]\n\n');
     } catch (err) {

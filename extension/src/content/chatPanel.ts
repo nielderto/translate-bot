@@ -1,3 +1,16 @@
+function renderMarkdown(text: string): string {
+  const esc = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  return esc
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^[-•] (.+)/gm, '• $1')
+    .replace(/\n/g, '<br>');
+}
+
 const CSS = `
   @keyframes tb-panel-in {
     from { opacity: 0; transform: translateX(-50%) translateY(8px); }
@@ -20,7 +33,11 @@ const CSS = `
     animation: tb-panel-in 0.18s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
   }
   .tb-chat-history { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
-  .tb-chat-turn { padding: 6px 8px; border-radius: 4px; line-height: 1.4; white-space: pre-wrap; }
+  .tb-chat-turn { padding: 6px 8px; border-radius: 4px; line-height: 1.5; }
+  .tb-chat-turn.user { white-space: pre-wrap; }
+  .tb-chat-turn.assistant { white-space: normal; }
+  .tb-chat-turn.assistant strong { color: #e2c97e; }
+  .tb-chat-turn.assistant em { color: #a8d8a8; font-style: italic; }
   .tb-chat-turn.user { background: rgba(255,255,255,0.08); }
   .tb-chat-turn.assistant { background: rgba(255,255,255,0.04); }
   .tb-chat-row { display: flex; gap: 6px; }
@@ -56,10 +73,11 @@ export function createChatPanel(): ChatPanel {
 
       panel = document.createElement('div');
       panel.className = 'tb-chat-panel';
-      // Swallow all keyboard events so YouTube shortcuts (space, f, k, …) don't fire while the panel is open.
+      // Swallow keyboard and scroll events so YouTube shortcuts/controls don't fire while the panel is open.
       for (const ev of ['keydown', 'keyup', 'keypress'] as const) {
         panel.addEventListener(ev, (e) => e.stopPropagation());
       }
+      panel.addEventListener('wheel', (e) => e.stopPropagation(), { passive: true });
 
       const header = document.createElement('div');
       header.className = 'tb-chat-header';
@@ -113,8 +131,10 @@ export function createChatPanel(): ChatPanel {
 
     async streamAssistant(iterable: AsyncIterable<string>): Promise<void> {
       const turn = panelObj.appendHistory({ role: 'assistant', content: '' });
+      let full = '';
       for await (const chunk of iterable) {
-        turn.textContent = (turn.textContent ?? '') + chunk;
+        full += chunk;
+        turn.innerHTML = renderMarkdown(full);
         if (history) history.scrollTop = history.scrollHeight;
       }
     },

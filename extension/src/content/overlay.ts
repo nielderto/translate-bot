@@ -321,9 +321,7 @@ export function createOverlay(): Overlay {
       clickHandler = cb;
     },
 
-    onAskClick(cb: () => void): void {
-      askHandler = cb;
-    },
+    onAskClick(cb: () => void): void { askHandler = cb; },
 
     showPreparing(done: number, total: number): void {
       if (!preparingEl || !prepFill || !prepCount) return;

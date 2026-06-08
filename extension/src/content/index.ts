@@ -1,4 +1,4 @@
-import { getSettings, type Settings } from '../lib/storage';
+import { getSettings, setSettings, type Settings } from '../lib/storage';
 import {
   translateLines,
   streamTranslateLines,
@@ -8,13 +8,14 @@ import {
   type OutputLine,
   type ChatHistoryMessage,
 } from '../lib/api';
+import { romanizeZh, romanizeKo } from '../lib/romanize';
 import { fetchTimedtext, fetchChineseTimedtext, findLineAtTime, type SubtitleLine } from './captureTimedtext';
 import { observeCaptions } from './captureDOM';
 import { makePlayerSync } from './playerSync';
 import { createOverlay } from './overlay';
 import { createChatPanel } from './chatPanel';
 import { onNavigate, videoIdFromUrl } from './spaWatcher';
-import { injectPlayerButton } from './playerButton';
+import { injectPlayerButton, type PlayerButtonSettings, type PlayerButtonHandle } from './playerButton';
 
 const HIDE_NATIVE_CSS = `
   .ytp-caption-window-container,
@@ -46,6 +47,10 @@ function injectHideNativeCss(): void {
 
 const BATCH_SIZE = 40;
 
+function localRomanize(text: string, lang: 'zh' | 'ko'): string {
+  return lang === 'zh' ? romanizeZh(text) : romanizeKo(text);
+}
+
 function parallelRomanize(
   backendUrl: string,
   videoId: string,
@@ -54,7 +59,20 @@ function parallelRomanize(
   signal: AbortSignal,
   currentTime: number,
   hasCaptions: boolean,
+  onReceive: (idx: number) => void,
 ): void {
+  // When captions exist, romanization is pure local computation — skip the backend entirely.
+  if (hasCaptions) {
+    for (const l of transcript) {
+      const romanization = localRomanize(l.text, sourceLang);
+      if (!romanization) continue;
+      const o: OutputLine = { index: l.index, original: l.text, translation: '', romanization };
+      romanMap.set(o.index, o);
+      onReceive(o.index);
+    }
+    return;
+  }
+
   // Sort by distance from current playback position — nearest lines go first
   const sorted = [...transcript].sort(
     (a, b) => Math.abs(a.startTime - currentTime) - Math.abs(b.startTime - currentTime),
@@ -72,11 +90,12 @@ function parallelRomanize(
             sourceLang,
             targetLang: 'en',
             lines: slice.map((l) => ({ index: l.index, text: l.text })),
-            hasCaptions,
+            hasCaptions: false,
           },
           signal,
         )) {
           romanMap.set(o.index, o);
+          onReceive(o.index);
         }
       } catch (e) {
         if (signal.aborted) return;
@@ -125,10 +144,77 @@ async function start(): Promise<void> {
   overlay.mount(player);
   overlay.setFontSize(settings.fontSize);
 
-  let removeBtn: (() => void) | null = null;
-  waitFor(() => document.querySelector('.ytp-time-display'), 5000).then((el) => {
-    if (el) removeBtn = injectPlayerButton(() => {});
+  let currentFontSize = settings.fontSize;
+  let currentSourceLang = settings.sourceLang;
+  let currentEnabled: boolean = settings.enabled;
+
+  // Use YouTube's own seek API when available — more reliable than video.currentTime directly.
+  const seekTo = (t: number): void => {
+    const ytPlayer = document.getElementById('movie_player') as (HTMLElement & { seekTo?: (t: number, a: boolean) => void }) | null;
+    if (ytPlayer?.seekTo) { ytPlayer.seekTo(t, true); return; }
+    video.currentTime = t;
+  };
+
+  // Populated once subtitle lines and sync are ready; nav buttons use these refs.
+  let navLines: SubtitleLine[] | null = null;
+  let navSync: { currentIdx: () => number } | null = null;
+
+  const onPrev = (): void => {
+    if (!navLines || !navLines.length) return;
+    const t = video.currentTime;
+    const idx = navSync?.currentIdx() ?? -1;
+    if (idx >= 0) {
+      const line = navLines[idx]!;
+      if (t - line.startTime > 1.0) {
+        seekTo(line.startTime);
+      } else if (idx > 0) {
+        seekTo(navLines[idx - 1]!.startTime);
+      }
+    } else {
+      const prev = [...navLines].reverse().find((l) => l.startTime < t);
+      if (prev) seekTo(prev.startTime);
+    }
+  };
+
+  const onNext = (): void => {
+    if (!navLines || !navLines.length) return;
+    const t = video.currentTime;
+    const idx = navSync?.currentIdx() ?? -1;
+    if (idx >= 0 && idx < navLines.length - 1) {
+      seekTo(navLines[idx + 1]!.startTime);
+    } else {
+      const next = navLines.find((l) => l.startTime > t);
+      if (next) seekTo(next.startTime);
+    }
+  };
+
+  let btnHandle: PlayerButtonHandle | null = null;
+  let subtitleNavReady = false;
+  // Guard against stale .then() callbacks firing after restart() tears us down.
+  let btnInjectionCancelled = false;
+  // Wait until .ytp-time-display exists AND is attached to a parent
+  waitFor(() => {
+    const el = document.querySelector('.ytp-time-display');
+    return el?.parentElement ? el : null;
+  }, 8000).then((anchor) => {
+    if (btnInjectionCancelled) return;
+    if (!anchor) { console.warn('[translate-bot] player controls not found'); return; }
+    btnHandle = injectPlayerButton(
+      anchor,
+      {
+        getSize:            () => currentFontSize,
+        onSizeChange:       (v) => { currentFontSize = v; overlay.setFontSize(v); void setSettings({ fontSize: v }); },
+        getSourceLang:      () => currentSourceLang,
+        onSourceLangChange: (v) => { currentSourceLang = v; void setSettings({ sourceLang: v }); },
+        getEnabled:         () => currentEnabled,
+        onEnabledChange:    (v) => { currentEnabled = v; void setSettings({ enabled: v }); },
+      },
+      { onPrev, onNext },
+    );
+    if (subtitleNavReady) btnHandle.setNavReady(true);
   });
+
+  const removeBtn = (): void => { btnHandle?.teardown(); };
 
   const chat = createChatPanel();
   let chatOpen = false;
@@ -232,8 +318,8 @@ async function start(): Promise<void> {
       clickedLineIndex = idx;
       const roman = romanMap.get(idx);
       const original = sourceLangLines![idx]?.text ?? '';
-      const ccText = englishLines
-        ? findLineAtTime(englishLines, sourceLangLines![idx].startTime)?.text ?? ''
+      const ccText = englishLines && sourceLangLines![idx]
+        ? findLineAtTime(englishLines, sourceLangLines![idx]!.startTime)?.text ?? ''
         : '';
       const translation = ccText || roman?.translation || '';
       const romanization = roman?.romanization || '';
@@ -249,6 +335,12 @@ async function start(): Promise<void> {
       onChange: (idx) => renderLine(idx),
     });
     sync.start();
+    navLines = sourceLangLines;
+    navSync = sync;
+    subtitleNavReady = true;
+    // btnHandle is null in TypeScript's flow (async .then() may not have fired), but at
+    // runtime it could be non-null if button injection completed first — handle that race.
+    (btnHandle as PlayerButtonHandle | null)?.setNavReady(true);
 
     // Poll every 300ms to pick up translations that arrived during gaps or while paused
     const poll = window.setInterval(() => renderLine(sync.currentIdx()), 300);
@@ -270,15 +362,17 @@ async function start(): Promise<void> {
         abort.signal,
         video.currentTime,
         !!englishLines,
+        (idx) => { if (idx === sync.currentIdx()) renderLine(idx); },
       );
     }
 
     teardown = () => {
+      btnInjectionCancelled = true;
       abort.abort();
       clearInterval(poll);
       sync.stop();
       overlay.unmount();
-      removeBtn?.();
+      removeBtn();
     };
     return;
   }
@@ -307,6 +401,8 @@ async function start(): Promise<void> {
     clickedLineIndex = index;
 
     const engLine = englishLines ? findLineAtTime(englishLines, captureTime) : null;
+    clickedLineText = text;
+    clickedLineTranslation = engLine?.text ?? '';
 
     overlay.setLine({ original: text, translation: engLine?.text ?? '', romanization: '' });
 
@@ -320,9 +416,10 @@ async function start(): Promise<void> {
       const o = out[0];
       if (o) {
         romanMap.set(index, o);
+        clickedLineTranslation = engLine?.text ?? o.translation;
         overlay.setLine({
           original: text,
-          translation: engLine?.text ?? o.translation,
+          translation: clickedLineTranslation,
           romanization: o.romanization,
         });
       }
@@ -331,7 +428,7 @@ async function start(): Promise<void> {
     }
   });
 
-  teardown = () => { stopObs(); overlay.unmount(); removeBtn?.(); };
+  teardown = () => { btnInjectionCancelled = true; stopObs(); overlay.unmount(); removeBtn(); };
 }
 
 function restart(): void {

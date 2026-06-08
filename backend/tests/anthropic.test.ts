@@ -21,10 +21,10 @@ beforeEach(() => { create.mockReset(); stream.mockReset(); });
 describe('translateBatch', () => {
   it('parses compact array format returned by claude', async () => {
     create.mockResolvedValue({
-      content: [{ type: 'text', text: '["0","Hello","nǐ hǎo"]]' }],
+      content: [{ type: 'text', text: '["0","Hello"]]' }],
     });
     const out = await translateBatch([{ index: 0, text: '你好' }], 'zh');
-    expect(out).toEqual([{ index: 0, translation: 'Hello', romanization: 'nǐ hǎo' }]);
+    expect(out).toEqual([{ index: 0, translation: 'Hello' }]);
   });
 
   it('throws when claude returns non-JSON', async () => {
@@ -34,14 +34,14 @@ describe('translateBatch', () => {
 
   it('parses multiple lines in order', async () => {
     create.mockResolvedValue({
-      content: [{ type: 'text', text: '["0","Hello","nǐ hǎo"],["1","Goodbye","zàijiàn"]]' }],
+      content: [{ type: 'text', text: '["0","Hello"],["1","Goodbye"]]' }],
     });
     const out = await translateBatch(
       [{ index: 0, text: '你好' }, { index: 1, text: '再见' }],
       'zh',
     );
     expect(out).toHaveLength(2);
-    expect(out[1]).toEqual({ index: 1, translation: 'Goodbye', romanization: 'zàijiàn' });
+    expect(out[1]).toEqual({ index: 1, translation: 'Goodbye' });
   });
 });
 
@@ -51,9 +51,8 @@ describe('streamTranslateBatch', () => {
     // Claude returns indices as strings ("0" not 0) — Number() coerces them back.
     const chunks = [
       '["0","Hel',
-      'lo","ann',
-      'yeonghaseyo"],["1","Goodbye","an',
-      'nyeonghaseyo"]]',
+      'lo"],["1","Goodby',
+      'e"]]',
     ];
 
     async function* fakeStream() {
@@ -64,7 +63,7 @@ describe('streamTranslateBatch', () => {
 
     stream.mockReturnValue({ [Symbol.asyncIterator]: fakeStream });
 
-    const results: { index: number; translation: string; romanization: string }[] = [];
+    const results: { index: number; translation: string }[] = [];
     for await (const line of streamTranslateBatch([
       { index: 0, text: '안녕하세요' },
       { index: 1, text: '잘 가' },
@@ -73,7 +72,29 @@ describe('streamTranslateBatch', () => {
     }
 
     expect(results).toHaveLength(2);
-    expect(results[0]).toEqual({ index: 0, translation: 'Hello', romanization: 'annyeonghaseyo' });
-    expect(results[1]).toEqual({ index: 1, translation: 'Goodbye', romanization: 'annyeonghaseyo' });
+    expect(results[0]).toEqual({ index: 0, translation: 'Hello' });
+    expect(results[1]).toEqual({ index: 1, translation: 'Goodbye' });
+  });
+
+  it('correctly parses all items from a large batch streamed in single chunk', async () => {
+    const N = 50;
+    const items = Array.from({ length: N }, (_, i) => [`"${i}"`, `"T${i}"`].join(','));
+    const payload = items.map((item) => `[${item}]`).join(',') + ']';
+
+    async function* fakeStream() {
+      yield { type: 'content_block_delta', delta: { type: 'text_delta', text: payload } };
+    }
+
+    stream.mockReturnValue({ [Symbol.asyncIterator]: fakeStream });
+
+    const inputLines = Array.from({ length: N }, (_, i) => ({ index: i, text: `text${i}` }));
+    const results: { index: number; translation: string }[] = [];
+    for await (const line of streamTranslateBatch(inputLines, 'zh')) {
+      results.push(line);
+    }
+
+    expect(results).toHaveLength(N);
+    expect(results[0]).toEqual({ index: 0, translation: 'T0' });
+    expect(results[N - 1]).toEqual({ index: N - 1, translation: `T${N - 1}` });
   });
 });

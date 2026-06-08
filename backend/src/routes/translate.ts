@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import { translateBatch, streamTranslateBatch } from '../anthropic';
 import type { SourceLang } from '../anthropic';
 import { getCachedLines, getAllCachedLines, putCachedLines, type CachedLine } from '../lib/cache';
+import { romanizeZh, romanizeKo } from '../lib/romanize';
 
 const SUPPORTED_SOURCE = new Set<SourceLang>(['zh', 'ko']);
 const SUPPORTED_TARGET = new Set<string>(['en']);
@@ -34,6 +35,12 @@ function isValidBody(
   );
 }
 
+function localRomanize(text: string, sourceLang: string): string {
+  if (sourceLang === 'zh') return romanizeZh(text);
+  if (sourceLang === 'ko') return romanizeKo(text);
+  return '';
+}
+
 export function translateRouter(): Router {
   const r = Router();
 
@@ -61,7 +68,7 @@ export function translateRouter(): Router {
 
     const send = (data: unknown) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
-    // Serve cached lines immediately so extension shows them without waiting
+    // Serve cached lines immediately
     const indices = lines.map((l) => l.index);
     const cached = await getCachedLines(videoId, sourceLang, targetLang, indices);
     const lineTextByIndex = new Map(lines.map((l) => [l.index, l.text]));
@@ -69,30 +76,43 @@ export function translateRouter(): Router {
       (c) =>
         !!c.romanization &&
         c.original === lineTextByIndex.get(c.index) &&
-        (!!c.translation || hasCaptions === true),
+        (!!c.translation || hasCaptions),
     );
     const cachedIdx = new Set(validCached.map((c) => c.index));
     for (const c of validCached) send(c);
 
     const missing = lines.filter((l) => !cachedIdx.has(l.index));
+
     if (missing.length > 0) {
-      try {
-        const toCache: CachedLine[] = [];
-        for await (const t of streamTranslateBatch(missing, sourceLang as SourceLang, hasCaptions)) {
-          const raw = t.romanization ?? '';
-          const romanization = raw && raw !== t.translation ? raw : '';
-          const result: CachedLine = {
-            index: t.index,
-            original: lineTextByIndex.get(t.index) ?? '',
-            translation: t.translation ?? '',
-            romanization,
-          };
-          send(result);
-          if (result.romanization) toCache.push(result);
+      // When English captions are already shown, skip Claude entirely — compute romanization locally.
+      if (hasCaptions) {
+        const toCache: CachedLine[] = missing.map((l) => ({
+          index: l.index,
+          original: l.text,
+          translation: '',
+          romanization: localRomanize(l.text, sourceLang),
+        }));
+        for (const result of toCache) {
+          if (result.romanization) send(result);
         }
-        await putCachedLines(videoId, sourceLang, targetLang, toCache);
-      } catch (err) {
-        console.error('[translate/stream]', err);
+        putCachedLines(videoId, sourceLang, targetLang, toCache.filter((r) => !!r.romanization)).catch(() => {});
+      } else {
+        try {
+          const toCache: CachedLine[] = [];
+          for await (const t of streamTranslateBatch(missing, sourceLang as SourceLang)) {
+            const result: CachedLine = {
+              index: t.index,
+              original: lineTextByIndex.get(t.index) ?? '',
+              translation: t.translation,
+              romanization: localRomanize(lineTextByIndex.get(t.index) ?? '', sourceLang),
+            };
+            send(result);
+            if (result.romanization) toCache.push(result);
+          }
+          putCachedLines(videoId, sourceLang, targetLang, toCache).catch(() => {});
+        } catch (err) {
+          console.error('[translate/stream]', err);
+        }
       }
     }
 
@@ -112,45 +132,49 @@ export function translateRouter(): Router {
     const indices = lines.map((l) => l.index);
     const cached = await getCachedLines(videoId, sourceLang, targetLang, indices);
     const lineTextByIndex = new Map(lines.map((l) => [l.index, l.text]));
-    // Treat rows as stale if romanization is missing OR the stored original no longer
-    // matches the current subtitle text (timedtext can change, or wrong track was cached).
     const validCached = cached.filter(
       (c) =>
         !!c.romanization &&
         c.original === lineTextByIndex.get(c.index) &&
-        (!!c.translation || hasCaptions === true),
+        (!!c.translation || hasCaptions),
     );
     const cachedIdx = new Set(validCached.map((c) => c.index));
     const missing = lines.filter((l) => !cachedIdx.has(l.index));
 
     let translated: CachedLine[] = [];
     if (missing.length > 0) {
-      try {
-        const result = await translateBatch(
-          missing.map((l) => ({ index: l.index, text: l.text })),
-          sourceLang as SourceLang,
-          hasCaptions,
-        );
-        translated = missing.map((l) => {
-          const t = result.find((r) => r.index === l.index);
-          const translation = t?.translation ?? '';
-          const raw = t?.romanization ?? '';
-          // Discard romanization if it's identical to the translation (model error)
-          const romanization = raw && raw !== translation ? raw : '';
-          return {
-            index: l.index,
-            original: l.text,
-            translation,
-            romanization,
-          };
-        });
+      if (hasCaptions) {
+        translated = missing.map((l) => ({
+          index: l.index,
+          original: l.text,
+          translation: '',
+          romanization: localRomanize(l.text, sourceLang),
+        }));
         const toCache = translated.filter((t) => !!t.romanization);
         await putCachedLines(videoId, sourceLang, targetLang, toCache);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'translate failed';
-        console.error('[translate] upstream error:', msg);
-        res.status(502).json({ error: 'upstream translation failed', detail: msg });
-        return;
+      } else {
+        try {
+          const result = await translateBatch(
+            missing.map((l) => ({ index: l.index, text: l.text })),
+            sourceLang as SourceLang,
+          );
+          translated = missing.map((l) => {
+            const t = result.find((r) => r.index === l.index);
+            return {
+              index: l.index,
+              original: l.text,
+              translation: t?.translation ?? '',
+              romanization: localRomanize(l.text, sourceLang),
+            };
+          });
+          const toCache = translated.filter((t) => !!t.romanization);
+          await putCachedLines(videoId, sourceLang, targetLang, toCache);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'translate failed';
+          console.error('[translate] upstream error:', msg);
+          res.status(502).json({ error: 'upstream translation failed', detail: msg });
+          return;
+        }
       }
     }
 

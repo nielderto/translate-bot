@@ -9,7 +9,6 @@ export type SourceLang = 'zh' | 'ko';
 export interface TranslatedLine {
   index: number;
   translation: string;
-  romanization: string;
 }
 
 export interface ChatMessage {
@@ -31,15 +30,14 @@ function getClient(): Anthropic {
 export async function* streamTranslateBatch(
   lines: InputLine[],
   sourceLang: SourceLang,
-  hasCaptions = false,
 ): AsyncGenerator<TranslatedLine> {
   const stream = getClient().beta.promptCaching.messages.stream({
     model: MODEL,
-    max_tokens: 8192,
+    max_tokens: 4096,
     temperature: 0,
     system: [{ type: 'text', text: TRANSLATE_SYSTEM, cache_control: { type: 'ephemeral' } }],
     messages: [
-      { role: 'user', content: buildTranslateUser(lines, sourceLang, hasCaptions) },
+      { role: 'user', content: buildTranslateUser(lines, sourceLang) },
       { role: 'assistant', content: '[' },
     ],
   });
@@ -64,11 +62,13 @@ export async function* streamTranslateBatch(
             depth--;
             if (depth === 0) {
               try {
-                const arr = JSON.parse(buf.slice(itemStart)) as [number | string, string, string];
-                yield { index: Number(arr[0]), translation: arr[1], romanization: arr[2] };
+                const arr = JSON.parse(buf.slice(itemStart)) as [number | string, string];
+                yield { index: Number(arr[0]), translation: arr[1] };
               } catch (e) {
                 console.warn('[translate-bot] failed to parse streamed item:', buf.slice(itemStart), e);
               }
+              buf = '';
+              itemStart = 0;
               state = 'between';
             }
           } else if (ch === '"') { state = 'string'; }
@@ -88,41 +88,38 @@ export async function* streamTranslateBatch(
 async function callTranslate(
   lines: InputLine[],
   sourceLang: SourceLang,
-  hasCaptions = false,
 ): Promise<TranslatedLine[]> {
   const res = await getClient().beta.promptCaching.messages.create({
     model: MODEL,
-    max_tokens: 8192,
+    max_tokens: 4096,
     temperature: 0,
     system: [{ type: 'text', text: TRANSLATE_SYSTEM, cache_control: { type: 'ephemeral' } }],
     messages: [
-      { role: 'user', content: buildTranslateUser(lines, sourceLang, hasCaptions) },
+      { role: 'user', content: buildTranslateUser(lines, sourceLang) },
       { role: 'assistant', content: '[' },
     ],
   });
 
   const body = res.content.map((b) => (b.type === 'text' ? b.text : '')).join('').trim();
   const text = '[' + body;
-  return (JSON.parse(text) as [number | string, string, string][]).map(([index, translation, romanization]) => ({
+  return (JSON.parse(text) as [number | string, string][]).map(([index, translation]) => ({
     index: Number(index),
     translation,
-    romanization,
   }));
 }
 
 export async function translateBatch(
   lines: InputLine[],
   sourceLang: SourceLang,
-  hasCaptions = false,
 ): Promise<TranslatedLine[]> {
   try {
-    return await callTranslate(lines, sourceLang, hasCaptions);
+    return await callTranslate(lines, sourceLang);
   } catch (err) {
     if (lines.length <= 1) throw err;
     const mid = Math.floor(lines.length / 2);
     const [a, b] = await Promise.all([
-      callTranslate(lines.slice(0, mid), sourceLang, hasCaptions).catch(() => [] as TranslatedLine[]),
-      callTranslate(lines.slice(mid), sourceLang, hasCaptions).catch(() => [] as TranslatedLine[]),
+      callTranslate(lines.slice(0, mid), sourceLang).catch(() => [] as TranslatedLine[]),
+      callTranslate(lines.slice(mid), sourceLang).catch(() => [] as TranslatedLine[]),
     ]);
     return [...a, ...b];
   }

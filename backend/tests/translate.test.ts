@@ -24,9 +24,9 @@ afterAll(async () => {
 });
 
 describe('POST /translate', () => {
-  it('calls claude on cache miss and caches results', async () => {
+  it('calls claude on cache miss, romanizes locally, and caches results', async () => {
     translateBatch.mockResolvedValue([
-      { index: 0, translation: 'Hello', romanization: 'nǐ hǎo' },
+      { index: 0, translation: 'Hello' },
     ]);
     const res = await request(createApp())
       .post('/translate')
@@ -37,9 +37,9 @@ describe('POST /translate', () => {
         lines: [{ index: 0, text: '你好' }],
       });
     expect(res.status).toBe(200);
-    expect(res.body.lines).toEqual([
-      { index: 0, original: '你好', translation: 'Hello', romanization: 'nǐ hǎo' },
-    ]);
+    expect(res.body.lines[0].translation).toBe('Hello');
+    expect(res.body.lines[0].romanization).toBe('nǐ hǎo');
+    expect(res.body.lines[0].original).toBe('你好');
     expect(translateBatch).toHaveBeenCalledTimes(1);
   });
 
@@ -84,8 +84,8 @@ describe('POST /translate', () => {
       romanization: 'b',
     });
     translateBatch.mockResolvedValue([
-      { index: 0, translation: 'A', romanization: 'a' },
-      { index: 2, translation: 'C', romanization: 'c' },
+      { index: 0, translation: 'A' },
+      { index: 2, translation: 'C' },
     ]);
     const res = await request(createApp())
       .post('/translate')
@@ -106,10 +106,7 @@ describe('POST /translate', () => {
 });
 
 describe('POST /translate with hasCaptions', () => {
-  it('forwards hasCaptions=true to translateBatch', async () => {
-    translateBatch.mockResolvedValue([
-      { index: 0, translation: '', romanization: 'nǐ hǎo' },
-    ]);
+  it('skips claude entirely and returns local romanization when hasCaptions=true', async () => {
     const res = await request(createApp())
       .post('/translate')
       .send({
@@ -120,21 +117,14 @@ describe('POST /translate with hasCaptions', () => {
         hasCaptions: true,
       });
     expect(res.status).toBe(200);
-    expect(translateBatch).toHaveBeenCalledWith(
-      expect.any(Array),
-      'zh',
-      true,
-    );
+    expect(res.body.lines[0].romanization).toBe('nǐ hǎo');
+    expect(res.body.lines[0].translation).toBe('');
+    expect(translateBatch).not.toHaveBeenCalled();
   });
 });
 
 describe('POST /translate/stream with hasCaptions', () => {
-  it('forwards hasCaptions=true to streamTranslateBatch', async () => {
-    // streamTranslateBatch is an async generator — mock it to yield one item then stop
-    streamTranslateBatch.mockImplementation(async function* () {
-      yield { index: 0, translation: '', romanization: 'nǐ hǎo' };
-    });
-
+  it('skips claude entirely and streams local romanization when hasCaptions=true', async () => {
     const res = await request(createApp())
       .post('/translate/stream')
       .send({
@@ -146,10 +136,7 @@ describe('POST /translate/stream with hasCaptions', () => {
       });
 
     expect(res.status).toBe(200);
-    expect(streamTranslateBatch).toHaveBeenCalledWith(
-      expect.any(Array),
-      'zh',
-      true,
-    );
+    expect(res.text).toContain('nǐ hǎo');
+    expect(streamTranslateBatch).not.toHaveBeenCalled();
   });
 });
